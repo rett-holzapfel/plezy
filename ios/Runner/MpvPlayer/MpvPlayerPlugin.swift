@@ -95,6 +95,8 @@ class MpvPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler, MpvPluginS
       result(playerCore?.isInitialized ?? false)
     case "updateFrame":
       handleUpdateFrame(result: result)
+    case "setVideoViewport":
+      handleSetVideoViewport(call: call, result: result)
     case "setLogLevel":
       handleSetLogLevel(call: call, result: result)
     case "getAudioRenderingMode":
@@ -103,6 +105,27 @@ class MpvPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler, MpvPluginS
       result(MpvPlayerCoreBase.audioSpdifCodecs)
     default:
       result(FlutterMethodNotImplemented)
+    }
+  }
+
+  /// Confines the video to part of the window (foldable tabletop layout), or
+  /// restores it full screen when called without arguments.
+  private func handleSetVideoViewport(call: FlutterMethodCall, result: @escaping FlutterResult) {
+    let viewport: CGRect?
+    if let args = call.arguments as? [String: Any] {
+      func number(_ key: String) -> CGFloat? { (args[key] as? NSNumber).map { CGFloat($0.doubleValue) } }
+      guard let x = number("x"), let y = number("y"), let width = number("width"), let height = number("height")
+      else {
+        result(FlutterError(code: "INVALID_ARGS", message: "setVideoViewport requires x, y, width, height", details: nil))
+        return
+      }
+      viewport = CGRect(x: x, y: y, width: width, height: height)
+    } else {
+      viewport = nil
+    }
+    DispatchQueue.main.async { [weak self] in
+      self?.playerCore?.setMainWindowViewport(viewport)
+      result(nil)
     }
   }
 

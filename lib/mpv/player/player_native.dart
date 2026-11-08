@@ -1,6 +1,7 @@
 import 'dart:async' show unawaited;
 import 'dart:convert';
 import 'dart:io' show Platform;
+import 'dart:ui' show Rect;
 
 import 'package:flutter/foundation.dart' show mapEquals, visibleForTesting;
 import 'package:flutter/services.dart';
@@ -12,6 +13,7 @@ import '../models.dart';
 import 'audio_rendering_mode.dart';
 import 'player_base.dart';
 import 'video_decoder_hold.dart';
+import 'video_viewport_support.dart';
 
 typedef _AudioStateRequest = ({
   bool passthrough,
@@ -25,7 +27,7 @@ typedef _AudioStateRequest = ({
 typedef _AudioStateGenerations = ({int passthrough, int normalization, int downmix, int rate});
 
 /// MPV-backed player for platforms where AetherEngine is not the native route.
-class PlayerNative extends PlayerBase {
+class PlayerNative extends PlayerBase implements VideoViewportSupport {
   /// Video player on the default mpv channels/core.
   ///
   /// [hardwareDecoding] mirrors the session's hardware-decoding setting so
@@ -1320,6 +1322,23 @@ class PlayerNative extends PlayerBase {
   Future<void> setVideoZoom(double scale) async {
     if (_nativeCoreUnavailable || audioOnly || !(Platform.isIOS || Platform.isMacOS) || !initialized) return;
     await invoke('setVideoZoom', {'scale': scale});
+  }
+
+  /// iOS only: the display layer lives in a UIView behind the Flutter view,
+  /// so the native side resizes that view. Other platforms either embed the
+  /// video in Flutter's own layout (`VideoRectSupport`) or have no fold.
+  @override
+  bool get supportsVideoViewport => Platform.isIOS && !audioOnly;
+
+  @override
+  Future<void> setVideoViewport(Rect? viewport) async {
+    if (_nativeCoreUnavailable || !supportsVideoViewport || !initialized) return;
+    await invoke(
+      'setVideoViewport',
+      viewport == null
+          ? null
+          : {'x': viewport.left, 'y': viewport.top, 'width': viewport.width, 'height': viewport.height},
+    );
   }
 
   @override

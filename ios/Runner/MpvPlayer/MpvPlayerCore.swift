@@ -12,6 +12,11 @@ class MpvPlayerCore: MpvPlayerCoreBase {
   private weak var window: UIWindow?
   private var mainBlankView: UIView?
   private var isVisible = false
+  /// Where the video sits in the main window while the Flutter UI owns the
+  /// rest of it (a foldable's tabletop layout: picture above the fold,
+  /// controls below), in window points. Nil fills the window. Ignored while
+  /// the video is on an external display, which has no fold.
+  private var mainWindowViewport: CGRect?
   private static var activeDisplayCriteriaKey: String?
   #if os(tvOS)
     /// A `preferredDisplayCriteria` write (set or clear) not yet consumed by
@@ -93,7 +98,7 @@ class MpvPlayerCore: MpvPlayerCoreBase {
       if let frame {
         containerView.frame = frame
       } else if let superview = containerView.superview {
-        containerView.frame = superview.bounds
+        containerView.frame = viewportFrame(in: superview) ?? superview.bounds
       } else if let window {
         containerView.frame = window.bounds
       }
@@ -111,6 +116,24 @@ class MpvPlayerCore: MpvPlayerCoreBase {
     #if os(iOS)
       updateEDRMode(sigPeak: lastSigPeak)
     #endif
+  }
+
+  /// Confine the video to `viewport` (window points) in the main window, or
+  /// fill it again when nil. The container keeps its black background, so the
+  /// layer letterboxes inside the viewport exactly as it does full screen.
+  func setMainWindowViewport(_ viewport: CGRect?) {
+    let sanitized = viewport.flatMap { rect -> CGRect? in
+      rect.isNull || rect.isInfinite || rect.width < 1 || rect.height < 1 ? nil : rect.standardized
+    }
+    guard sanitized != mainWindowViewport else { return }
+    mainWindowViewport = sanitized
+    containerView?.autoresizingMask = sanitized == nil ? [.flexibleWidth, .flexibleHeight] : []
+    updateFrame()
+  }
+
+  private func viewportFrame(in superview: UIView) -> CGRect? {
+    guard let mainWindowViewport, let window, superview === window else { return nil }
+    return mainWindowViewport.intersection(window.bounds).isEmpty ? nil : mainWindowViewport
   }
 
   /// Size the video layer to the container via bounds/position, never `frame`:
@@ -197,8 +220,9 @@ class MpvPlayerCore: MpvPlayerCoreBase {
         superview.insertSubview(containerView, at: 0)
       }
 
-      containerView.frame = superview.bounds
-      containerView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+      let viewport = viewportFrame(in: superview)
+      containerView.frame = viewport ?? superview.bounds
+      containerView.autoresizingMask = viewport == nil ? [.flexibleWidth, .flexibleHeight] : []
     }
   }
 
