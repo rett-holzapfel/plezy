@@ -44,6 +44,7 @@ import 'services/fullscreen_state_manager.dart';
 import 'services/settings_service.dart';
 import 'services/agent_control_service.dart';
 import 'widgets/agent_control_scope.dart';
+import 'widgets/liquid_glass.dart';
 import 'widgets/settings_builder.dart';
 import 'utils/iphone_duo.dart';
 import 'utils/platform_detector.dart';
@@ -151,6 +152,7 @@ void _registerTvosPlatformPlugins() {
 
 void main() {
   final binding = PlezyWidgetsBinding.ensureInitialized();
+  LiquidGlassSupport.ensureInitialized();
   if (agentControlEnabled) AgentControlService.instance.register();
   AndroidExitDiagnostics.markStartupPhase(AndroidStartupPhase.dartMain);
   // Keep the accessibility tree available to Maestro and other UI automation
