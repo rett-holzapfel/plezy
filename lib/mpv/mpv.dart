@@ -49,6 +49,7 @@ export 'player/audio_rendering_mode.dart';
 export 'player/player.dart';
 export 'player/player_state.dart';
 export 'player/player_streams.dart';
+export 'player/video_viewport_support.dart';
 
 // Models
 export 'models.dart';

@@ -71,6 +71,10 @@ import MediaPlayer
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "DeepLinkPlugin") {
       DeepLinkPlugin.register(with: registrar)
     }
+
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "LiquidGlassPlugin") {
+      LiquidGlassPlugin.register(with: registrar)
+    }
   }
 
   private func registerDeviceAdjustmentChannel(messenger: FlutterBinaryMessenger) {

@@ -96,6 +96,7 @@ import '../utils/platform_detector.dart';
 import '../utils/provider_extensions.dart';
 import '../utils/snackbar_helper.dart';
 import '../utils/stream_buffer_sizing.dart';
+import '../utils/tabletop_posture.dart';
 import '../utils/video_player_navigation.dart';
 import '../utils/android_exit_diagnostics.dart';
 import 'video_player/completion_latch.dart';
@@ -1035,6 +1036,14 @@ class VideoPlayerScreenState extends State<VideoPlayerScreen>
   Size? _pendingVideoLayoutSize;
   Player? _lastVideoLayoutPlayer;
   bool _videoLayoutUpdateScheduled = false;
+
+  /// Tabletop layout (a foldable standing half-open): the video viewport last
+  /// applied to the native surface, the player it went to, and the viewport
+  /// the latest build asked for. See `_scheduleTabletopSync`.
+  Rect? _appliedTabletopViewport;
+  Player? _appliedTabletopPlayer;
+  Rect? _requestedTabletopViewport;
+  bool _tabletopSyncScheduled = false;
   double? _pinchStartZoomScale;
   int _pinchZoomActivationUpdateCount = 0;
   bool _isPinchZooming = false;

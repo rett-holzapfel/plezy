@@ -166,10 +166,111 @@ extension _VideoPlayerBuildMethods on VideoPlayerScreenState {
     _pinchStartZoomScale = null;
   }
 
+  /// The fold of a foldable standing half-open (iPhone Duo propped like a
+  /// laptop) when the player should switch to its tabletop layout:
+  /// the picture in the pane above the fold, the controls pinned in the pane
+  /// below it. Null keeps the regular full-screen layout.
+  ///
+  /// Only for backends that can move their native surface: the controls pane
+  /// is opaque, so a surface left full screen would lose its lower half.
+  Rect? _tabletopFold(BuildContext context, {required bool isMobile}) {
+    if (!isMobile) return null;
+    if (player case final VideoViewportSupport viewportPlayer when viewportPlayer.supportsVideoViewport) {
+      return tabletopFoldOf(context);
+    }
+    return null;
+  }
+
+  /// Applies [viewport] after the frame, coalescing the builds in between.
+  void _scheduleTabletopSync(Rect? viewport) {
+    _requestedTabletopViewport = viewport;
+    if (_tabletopSyncScheduled) return;
+    _tabletopSyncScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _tabletopSyncScheduled = false;
+      if (!mounted) return;
+      _applyTabletopViewport(_requestedTabletopViewport);
+    });
+  }
+
+  /// Moves the native video surface into [viewport] (or back to full screen)
+  /// and pins the chrome while the tabletop layout is up: the controls own
+  /// their pane, so hiding them would only leave it black.
+  void _applyTabletopViewport(Rect? viewport) {
+    final currentPlayer = player;
+    final playerChanged = !identical(currentPlayer, _appliedTabletopPlayer);
+    if (!playerChanged && viewport == _appliedTabletopViewport) return;
+
+    final wasTabletop = _appliedTabletopViewport != null;
+    _appliedTabletopViewport = viewport;
+    _appliedTabletopPlayer = currentPlayer;
+
+    // Sent on a player change even when null: the native core outlives a
+    // route replacement, so a new player can inherit the last viewport.
+    if (currentPlayer case final VideoViewportSupport viewportPlayer) {
+      unawaited(_sendTabletopViewport(viewportPlayer, viewport));
+    }
+
+    final isTabletop = viewport != null;
+    if (isTabletop == wasTabletop) return;
+    if (isTabletop) {
+      _chromeController.hold(PlayerChromeHold.tabletop);
+    } else {
+      _chromeController.release(PlayerChromeHold.tabletop);
+    }
+  }
+
+  Future<void> _sendTabletopViewport(VideoViewportSupport viewportPlayer, Rect? viewport) async {
+    try {
+      await viewportPlayer.setVideoViewport(viewport);
+    } catch (e, st) {
+      appLogger.w('Failed to set the tabletop video viewport', error: e, stackTrace: st);
+    }
+  }
+
+  /// Hosts the controls. In the tabletop layout they move into the pane below
+  /// [fold], laid out as if that pane were the whole screen. The widget chain
+  /// is the same in both layouts, so folding never rebuilds the controls'
+  /// state.
+  Widget _buildControlsPane({required Rect? fold, required Widget child}) {
+    return Builder(
+      builder: (context) {
+        final media = MediaQuery.of(context);
+        final paneTop = fold?.bottom ?? 0.0;
+        var paneMedia = media;
+        if (fold != null) {
+          paneMedia = media.copyWith(
+            size: Size(media.size.width, media.size.height - paneTop),
+            padding: media.padding.copyWith(top: 0),
+            viewPadding: media.viewPadding.copyWith(top: 0),
+            displayFeatures: const [],
+          );
+        }
+        return Padding(
+          padding: EdgeInsets.only(top: paneTop),
+          child: ColoredBox(
+            color: fold == null ? Colors.transparent : Colors.black,
+            child: MediaQuery(data: paneMedia, child: child),
+          ),
+        );
+      },
+    );
+  }
+
   Widget _buildVideoPlayer(BuildContext context) {
     // Cache platform detection to avoid multiple calls
     final isMobile = PlatformDetector.isMobile(context);
     final hideChromeOnMouseExit = !(isMobile && !PlatformDetector.isTV());
+
+    final tabletopFold = _tabletopFold(context, isMobile: isMobile);
+    final screenSize = MediaQuery.sizeOf(context);
+    final tabletopViewport = tabletopFold == null
+        ? null
+        : Rect.fromLTRB(0, MediaQuery.paddingOf(context).top, screenSize.width, tabletopFold.top);
+    _scheduleTabletopSync(tabletopViewport);
+    // Prompts and the buffering spinner belong on the picture, so in the
+    // tabletop layout they stay in the pane above the fold.
+    final videoPaneBottomInset = tabletopFold == null ? 0.0 : screenSize.height - tabletopFold.top;
 
     // Back handling (sheet-close + player exit) is owned by the OverlaySheetHost
     // that wraps this widget — see video_player_screen.dart (canPop/onSystemBack).
@@ -277,100 +378,113 @@ extension _VideoPlayerBuildMethods on VideoPlayerScreenState {
                     return Video(
                       player: player!,
                       hasFirstFrame: _firstFrame.uiReady,
-                      controls: (context) => PlexVideoControls(
-                        player: player!,
-                        volumeController: _volumeController!,
-                        metadata: _currentMetadata,
-                        onNext: onNext,
-                        onPrevious: onPrevious,
-                        availableVersions: _availableVersions,
-                        selectedMediaIndex: _effectiveSelectedMediaIndex,
-                        selectedQualityPreset: _selectedQualityPreset,
-                        serverSupportsTranscoding: _serverSupportsTranscoding,
-                        isTranscoding: _isTranscoding,
-                        isOfflinePlayback: _isOfflinePlayback,
-                        sourceAudioTracks: sourceAudioTracks,
-                        selectedAudioStreamId: _selectedAudioStreamId,
-                        sourceSubtitleTracks: sourceSubtitleTracks,
-                        selectedSubtitleChoice: _selectedSourceSubtitleChoiceForControls(sourceSubtitleTracks),
-                        selectedSecondarySubtitleStreamId: _playbackSession?.subtitleSelection.secondarySourceStreamId,
-                        sourceSubtitleSidecars: sourceSubtitleSidecars,
-                        sourcePartId: _currentMediaInfo?.partId,
-                        onPlaybackSourceChanged: _switchPlaybackSource,
-                        onTogglePIPMode: _togglePIPMode,
-                        boxFitMode: _videoFilterManager?.boxFitMode ?? 0,
-                        videoZoomScale: _videoFilterManager?.zoomScale ?? 1.0,
-                        onCycleBoxFitMode: _visualEffects.cycleBoxFitMode,
-                        onVideoZoomChanged: _visualEffects.setZoom,
-                        onZoomIn: _visualEffects.zoomIn,
-                        onZoomOut: _visualEffects.zoomOut,
-                        onResetVideoZoom: _visualEffects.resetZoom,
-                        onCycleAudioTrack: _cycleAudioTrack,
-                        onCycleSubtitleTrack: _cycleSubtitleTrack,
-                        onAudioTrackChanged: _onAudioTrackChanged,
-                        onSubtitleTrackChanged: _onSubtitleTrackChanged,
-                        onSecondarySubtitleTrackChanged: _onSecondarySubtitleTrackChanged,
-                        onSeekRequested: _seekPlayback,
-                        onRateRequested: _setPlaybackRate,
-                        onPlayPauseRequested: _handleControlsTransport,
-                        onBack: _handleBackButton,
-                        onReachedEnd: ({skipAutoPlayCountdown = false}) =>
-                            _onVideoCompleted(true, skipAutoPlayCountdown: skipAutoPlayCountdown),
-                        canControl: authority.canControlPlayback,
-                        canNavigateMediaItems: authority.canNavigateMediaItems,
-                        hasFirstFrame: _firstFrame.uiReady,
-                        playNextFocusNode: _episode.showPlayNextDialog ? _playNextConfirmFocusNode : null,
-                        playbackPromptOpen: _showStillWatchingPrompt,
-                        chromeController: _chromeController,
-                        shaderService: _shaderService,
-                        // ignore: no-empty-block - state update triggers rebuild to reflect shader change
-                        onShaderChanged: () => _setPlayerState(() {}),
-                        thumbnailDataBuilder: _scrubPreviewSource?.isAvailable == true ? _getThumbnailData : null,
-                        isLive: widget.isLive,
-                        liveChannelName: _live.channelName,
-                        captureBuffer: _live.captureBuffer,
-                        isAtLiveEdge: _live.atLiveEdge,
-                        liveEpochForPosition: widget.isLive ? _liveEpochForPosition : null,
-                        onLiveSeek: _live.captureBuffer != null ? _seekLiveToEpoch : null,
-                        onLiveSeekBy: _live.captureBuffer != null ? _liveSeek.seekBy : null,
-                        onJumpToLive: _live.captureBuffer != null && !_live.atLiveEdge ? _jumpToLiveEdge : null,
-                        isAmbientLightingEnabled: _ambientLightingService?.isEnabled ?? false,
-                        onToggleAmbientLighting: _ambientLightingService?.isSupported == true
-                            ? _visualEffects.toggleAmbientLighting
-                            : null,
-                        toastController: _toastController,
+                      controls: (context) => _buildControlsPane(
+                        fold: tabletopFold,
+                        child: PlexVideoControls(
+                          player: player!,
+                          volumeController: _volumeController!,
+                          metadata: _currentMetadata,
+                          onNext: onNext,
+                          onPrevious: onPrevious,
+                          availableVersions: _availableVersions,
+                          selectedMediaIndex: _effectiveSelectedMediaIndex,
+                          selectedQualityPreset: _selectedQualityPreset,
+                          serverSupportsTranscoding: _serverSupportsTranscoding,
+                          isTranscoding: _isTranscoding,
+                          isOfflinePlayback: _isOfflinePlayback,
+                          sourceAudioTracks: sourceAudioTracks,
+                          selectedAudioStreamId: _selectedAudioStreamId,
+                          sourceSubtitleTracks: sourceSubtitleTracks,
+                          selectedSubtitleChoice: _selectedSourceSubtitleChoiceForControls(sourceSubtitleTracks),
+                          selectedSecondarySubtitleStreamId:
+                              _playbackSession?.subtitleSelection.secondarySourceStreamId,
+                          sourceSubtitleSidecars: sourceSubtitleSidecars,
+                          sourcePartId: _currentMediaInfo?.partId,
+                          onPlaybackSourceChanged: _switchPlaybackSource,
+                          onTogglePIPMode: _togglePIPMode,
+                          boxFitMode: _videoFilterManager?.boxFitMode ?? 0,
+                          videoZoomScale: _videoFilterManager?.zoomScale ?? 1.0,
+                          onCycleBoxFitMode: _visualEffects.cycleBoxFitMode,
+                          onVideoZoomChanged: _visualEffects.setZoom,
+                          onZoomIn: _visualEffects.zoomIn,
+                          onZoomOut: _visualEffects.zoomOut,
+                          onResetVideoZoom: _visualEffects.resetZoom,
+                          onCycleAudioTrack: _cycleAudioTrack,
+                          onCycleSubtitleTrack: _cycleSubtitleTrack,
+                          onAudioTrackChanged: _onAudioTrackChanged,
+                          onSubtitleTrackChanged: _onSubtitleTrackChanged,
+                          onSecondarySubtitleTrackChanged: _onSecondarySubtitleTrackChanged,
+                          onSeekRequested: _seekPlayback,
+                          onRateRequested: _setPlaybackRate,
+                          onPlayPauseRequested: _handleControlsTransport,
+                          onBack: _handleBackButton,
+                          onReachedEnd: ({skipAutoPlayCountdown = false}) =>
+                              _onVideoCompleted(true, skipAutoPlayCountdown: skipAutoPlayCountdown),
+                          canControl: authority.canControlPlayback,
+                          canNavigateMediaItems: authority.canNavigateMediaItems,
+                          hasFirstFrame: _firstFrame.uiReady,
+                          playNextFocusNode: _episode.showPlayNextDialog ? _playNextConfirmFocusNode : null,
+                          playbackPromptOpen: _showStillWatchingPrompt,
+                          chromeController: _chromeController,
+                          shaderService: _shaderService,
+                          // ignore: no-empty-block - state update triggers rebuild to reflect shader change
+                          onShaderChanged: () => _setPlayerState(() {}),
+                          thumbnailDataBuilder: _scrubPreviewSource?.isAvailable == true ? _getThumbnailData : null,
+                          isLive: widget.isLive,
+                          liveChannelName: _live.channelName,
+                          captureBuffer: _live.captureBuffer,
+                          isAtLiveEdge: _live.atLiveEdge,
+                          liveEpochForPosition: widget.isLive ? _liveEpochForPosition : null,
+                          onLiveSeek: _live.captureBuffer != null ? _seekLiveToEpoch : null,
+                          onLiveSeekBy: _live.captureBuffer != null ? _liveSeek.seekBy : null,
+                          onJumpToLive: _live.captureBuffer != null && !_live.atLiveEdge ? _jumpToLiveEdge : null,
+                          isAmbientLightingEnabled: _ambientLightingService?.isEnabled ?? false,
+                          onToggleAmbientLighting: _ambientLightingService?.isSupported == true
+                              ? _visualEffects.toggleAmbientLighting
+                              : null,
+                          toastController: _toastController,
+                        ),
                       ),
                     );
                   },
                 ),
               ),
-              // Netflix-style auto-play overlay (hidden in PiP mode)
-              VideoPlayerPlayNextOverlay(
-                visible: _episode.showPlayNextDialog,
-                nextEpisode: _episode.next,
-                autoPlayCountdown: _episode.autoPlayCountdown,
-                cancelFocusNode: _playNextCancelFocusNode,
-                confirmFocusNode: _playNextConfirmFocusNode,
-                chromeController: _chromeController,
-                onCancel: _cancelAutoPlay,
-                onPlayNext: _playNext,
-              ),
-              // "Still watching?" overlay (hidden in PiP mode)
-              VideoPlayerStillWatchingOverlay(
-                visible: _showStillWatchingPrompt,
-                countdown: _stillWatchingCountdown,
-                pauseFocusNode: _stillWatchingPauseFocusNode,
-                continueFocusNode: _stillWatchingContinueFocusNode,
-                chromeController: _chromeController,
-                onPause: _onStillWatchingPause,
-                onContinue: _onStillWatchingContinue,
-              ),
-              // Buffering indicator (also shows during initial load, but not when exiting)
-              // Hidden in PiP mode
-              VideoPlayerBufferingOverlay(
-                isBuffering: _isBuffering,
-                hasFirstFrame: _firstFrame.uiReady,
-                isExiting: _isExiting,
+              Positioned.fill(
+                child: Padding(
+                  padding: EdgeInsets.only(bottom: videoPaneBottomInset),
+                  child: Stack(
+                    children: [
+                      // Netflix-style auto-play overlay (hidden in PiP mode)
+                      VideoPlayerPlayNextOverlay(
+                        visible: _episode.showPlayNextDialog,
+                        nextEpisode: _episode.next,
+                        autoPlayCountdown: _episode.autoPlayCountdown,
+                        cancelFocusNode: _playNextCancelFocusNode,
+                        confirmFocusNode: _playNextConfirmFocusNode,
+                        chromeController: _chromeController,
+                        onCancel: _cancelAutoPlay,
+                        onPlayNext: _playNext,
+                      ),
+                      // "Still watching?" overlay (hidden in PiP mode)
+                      VideoPlayerStillWatchingOverlay(
+                        visible: _showStillWatchingPrompt,
+                        countdown: _stillWatchingCountdown,
+                        pauseFocusNode: _stillWatchingPauseFocusNode,
+                        continueFocusNode: _stillWatchingContinueFocusNode,
+                        chromeController: _chromeController,
+                        onPause: _onStillWatchingPause,
+                        onContinue: _onStillWatchingContinue,
+                      ),
+                      // Buffering indicator (also shows during initial load, but not when exiting)
+                      // Hidden in PiP mode
+                      VideoPlayerBufferingOverlay(
+                        isBuffering: _isBuffering,
+                        hasFirstFrame: _firstFrame.uiReady,
+                        isExiting: _isExiting,
+                      ),
+                    ],
+                  ),
+                ),
               ),
               // Watch Together overlays (isolated from video surface repaints)
               const VideoPlayerWatchTogetherOverlays(),
